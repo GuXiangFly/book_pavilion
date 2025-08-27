@@ -16,6 +16,8 @@ import base64
 from PIL import Image
 import tempfile
 import shutil
+
+from numpy.f2py.auxfuncs import throw_error
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
@@ -26,7 +28,7 @@ import time
 class DoubaoOCRConverter:
     """豆包OCR转换器类"""
 
-    def __init__(self, api_key, endpoint, input_pdf_path, output_pdf_path=None):
+    def __init__(self, api_key, input_pdf_path, endpoint=None, output_pdf_path=None):
         """
         初始化豆包OCR转换器
         
@@ -39,7 +41,10 @@ class DoubaoOCRConverter:
         self.api_key = api_key
         self.endpoint = endpoint
         self.input_pdf_path = input_pdf_path
-        self.output_pdf_path = output_pdf_path or self._generate_output_path()
+        self.output_pdf_path = self._generate_output_path()
+        self.book_json_data_path = ""
+        self.book_json_data = []
+        self.base_name = self._generate_base_name()
 
         # 创建临时目录
         self.temp_dir = tempfile.mkdtemp()
@@ -53,12 +58,34 @@ class DoubaoOCRConverter:
     def _generate_output_path(self):
         """生成输出文件路径"""
         base_name = os.path.splitext(os.path.basename(self.input_pdf_path))[0]
+        self.base_name = base_name
         return f"{base_name}_doubao_ocr.pdf"
+
+    def _generate_base_name(self):
+        base_name = os.path.splitext(os.path.basename(self.input_pdf_path))[0]
+        self.base_name = base_name
+        base_name_dir = f"data/{self.base_name}"
+        os.makedirs(base_name_dir, exist_ok=True)
+        return base_name
 
     def _encode_image_to_base64(self, image_path):
         """将图像编码为base64"""
         with open(image_path, 'rb') as img_file:
             return base64.b64encode(img_file.read()).decode('utf-8')
+
+    def _is_loaded_this_page(self, page_index):
+        if self.book_json_data.__sizeof__() == 0:
+            return None
+
+        for page_data in self.book_json_data:
+            if page_data['page_index'] == page_index:
+                page_data_text = page_data["text"]
+                if page_data_text != "" and page_data_text != "<UNK>" and page_data_text is not None:
+                    return page_data
+                else:
+                    return None
+        return None
+
 
     def _call_doubao_ocr(self, image_base64):
         """调用豆包OCR API"""
@@ -137,10 +164,11 @@ class DoubaoOCRConverter:
                         ]
                     }
                 ],
-                max_tokens=4000
+                max_tokens=4000,
+                timeout=20.0  # 20秒的超时事件
             )
             result = response.choices[0].message.content
-            print("OCR结果是：", result)
+            print("OCR结果是：\n", result)
             return result
 
         except Exception as e:
@@ -153,7 +181,7 @@ class DoubaoOCRConverter:
         image_paths = []
 
         # 创建pdf_imgs目录
-        pdf_imgs_dir = "data/pdf_imgs"
+        pdf_imgs_dir = f"data/{self.base_name}/pdf_imgs"
         os.makedirs(pdf_imgs_dir, exist_ok=True)
 
         # 获取PDF文件名（不含扩展名）作为子目录
@@ -164,6 +192,14 @@ class DoubaoOCRConverter:
         print(f"正在处理PDF，共{len(doc)}页...")
 
         for page_num in range(len(doc)):
+            page_index = page_num + 1
+
+            temp_page_data = self._is_loaded_this_page(page_index)
+            if temp_page_data is not None:
+                print(f"第{page_index}页的PDF 已经处理过了")
+                image_paths.append(temp_page_data["image_path"])
+                continue
+
             page = doc[page_num]
 
             # 设置高DPI以获得更好的OCR效果
@@ -177,9 +213,7 @@ class DoubaoOCRConverter:
 
             print(f"已提取第{page_num + 1}页图像到: {img_path}")
 
-
         doc.close()
-
 
         return image_paths
 
@@ -188,50 +222,107 @@ class DoubaoOCRConverter:
         c = canvas.Canvas(self.output_pdf_path, pagesize=A4)
         width, height = A4
 
-        # 设置中文字体
-        try:
-            pdfmetrics.registerFont(TTFont('SimSun', '/System/Library/Fonts/PingFang.ttc'))
-            font_name = 'SimSun'
-        except:
+        # 设置中文字体 - 尝试多种中文字体
+        font_name = None
+        font_paths = [
+            '/System/Library/Fonts/PingFang.ttc',  # macOS
+            '/System/Library/Fonts/STHeiti Medium.ttc',  # macOS
+            'C:/Windows/Fonts/simhei.ttf',  # Windows
+            'C:/Windows/Fonts/simsun.ttc',  # Windows
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',  # Linux
+            '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',  # Linux
+        ]
+        
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                try:
+                    font_name = 'CustomChinese'
+                    pdfmetrics.registerFont(TTFont('CustomChinese', font_path))
+                    break
+                except Exception as e:
+                    print(f"字体加载失败 {font_path}: {e}")
+                    continue
+        
+        if not font_name:
             font_name = 'Helvetica'
+            print("警告：使用默认字体，中文字符可能显示为乱码")
+
+        # 设置PDF元数据
+        c.setTitle(f"{self.base_name} - OCR结果")
+        c.setAuthor("豆包OCR")
+        c.setSubject("OCR处理后的文字版PDF")
 
         for i, text in enumerate(texts):
             if i > 0:
                 c.showPage()
 
             # 设置字体和大小
-            c.setFont(font_name, 12)
+            c.setFont(font_name, 14)  # 增大字体以提高可读性
 
             # 计算文本位置
             x = 50
             y = height - 50
-            line_height = 20
+            line_height = 24  # 增加行高
             max_width = width - 100
 
+            # 处理文本编码问题
+            try:
+                # 确保文本是UTF-8编码
+                if isinstance(text, str):
+                    processed_text = text
+                else:
+                    processed_text = str(text)
+                
+                # 替换可能的乱码字符
+                processed_text = processed_text.replace('�', '?')
+                processed_text = processed_text.encode('utf-8', 'ignore').decode('utf-8')
+                
+            except Exception as e:
+                print(f"文本处理错误: {e}")
+                processed_text = str(text)
+
             # 处理文本
-            lines = text.split('\n')
+            lines = processed_text.split('\n')
 
             for line in lines:
                 if not line.strip():
                     y -= line_height
                     continue
 
-                # 处理长行换行
-                words = list(line)
+                # 处理长行换行 - 按字符分割
                 current_line = ""
-
-                for char in words:
-                    test_line = current_line + char
-                    if c.stringWidth(test_line, font_name, 12) < max_width:
+                
+                # 先将整行按空格分割，再处理每个词
+                words = line.split(' ')
+                
+                for word in words:
+                    if not word:
+                        continue
+                    
+                    test_line = current_line + word + " "
+                    if c.stringWidth(test_line, font_name, 14) < max_width:
                         current_line = test_line
                     else:
-                        if current_line:
-                            c.drawString(x, y, current_line)
+                        if current_line.strip():
+                            c.drawString(x, y, current_line.strip())
                             y -= line_height
-                        current_line = char
+                        current_line = word + " "
+                        
+                        # 如果单个词太长，按字符分割
+                        if c.stringWidth(word, font_name, 14) > max_width:
+                            current_line = ""
+                            for char in word:
+                                test_char = current_line + char
+                                if c.stringWidth(test_char, font_name, 14) < max_width:
+                                    current_line = test_char
+                                else:
+                                    if current_line:
+                                        c.drawString(x, y, current_line)
+                                        y -= line_height
+                                    current_line = char
 
-                if current_line:
-                    c.drawString(x, y, current_line)
+                if current_line.strip():
+                    c.drawString(x, y, current_line.strip())
                     y -= line_height
 
                 if y < 50:
@@ -240,16 +331,21 @@ class DoubaoOCRConverter:
 
         c.save()
 
+    def _init_book_data_json_path(self):
+        """初始化书籍数据JSON文件路径，使用新的目录结构"""
+        pdf_name = os.path.splitext(os.path.basename(self.input_pdf_path))[0]
+        json_dir = f"data/{pdf_name}/json"
+        os.makedirs(json_dir, exist_ok=True)
+        book_data_path = os.path.join(json_dir, f"{pdf_name}_book_data.json")
+        self.book_json_data_path = book_data_path
+        return book_data_path
 
     def _save_book_data(self, page_data_list):
-        """收集书籍数据用于embedding"""
+        """收集书籍数据用于embedding，使用新的目录结构"""
         book_data = []
-        pdf_name = os.path.splitext(os.path.basename(self.input_pdf_path))[0]
-
-        # 保存到book_data.json
-        book_data_path = os.path.join("data", f"{pdf_name}_book_data.json")
-        os.makedirs("data", exist_ok=True)
-
+        # 保存到新的目录结构下的book_data.json
+        book_data_path = self._init_book_data_json_path()
+        
         with open(book_data_path, 'w', encoding='utf-8') as f:
             json.dump(page_data_list, f, ensure_ascii=False, indent=2)
 
@@ -257,29 +353,35 @@ class DoubaoOCRConverter:
         return book_data_path
 
     def _save_book_data_not_with_img(self, page_data_list):
-        """收集书籍数据用于embedding"""
-        book_data = []
+        """收集书籍数据用于embedding，使用新的目录结构"""
         pdf_name = os.path.splitext(os.path.basename(self.input_pdf_path))[0]
 
-
-        page_data_no_img_list =[]
+        page_data_no_img_list = []
 
         for page_num in range(len(page_data_list)):
-            origin_page_data =  page_data_list[page_num]
-            origin_page_data[""]
+            origin_page_data = page_data_list[page_num]
+            # 创建不包含图片数据的版本
+            new_page_data = {
+                "page_index": origin_page_data["page_index"],
+                "text": origin_page_data["text"],
+                "pdf_name": origin_page_data["pdf_name"],
+                "page_id": origin_page_data["page_id"]
+            }
+            page_data_no_img_list.append(new_page_data)
 
-        # 保存到book_data.json
-        book_data_path = os.path.join("data", f"{pdf_name}_book_data.json")
-        os.makedirs("data", exist_ok=True)
+        # 保存到新的目录结构下的book_data.json
+        json_dir = f"data/{pdf_name}/json"
+        book_data_path = os.path.join(json_dir, f"{pdf_name}_book_data_no_img.json")
+        os.makedirs(json_dir, exist_ok=True)
 
         with open(book_data_path, 'w', encoding='utf-8') as f:
-            json.dump(page_data_list, f, ensure_ascii=False, indent=2)
+            json.dump(page_data_no_img_list, f, ensure_ascii=False, indent=2)
 
-        print(f"书籍数据已保存到: {book_data_path}")
+        print(f"书籍数据(无图片)已保存到: {book_data_path}")
         return book_data_path
 
     def _collect_book_data(self, image_paths, texts, image_base64_list):
-        """收集书籍数据用于embedding"""
+        """收集书籍数据用于embedding，使用新的目录结构"""
         book_data = []
         pdf_name = os.path.splitext(os.path.basename(self.input_pdf_path))[0]
 
@@ -294,17 +396,66 @@ class DoubaoOCRConverter:
             }
             book_data.append(page_data)
 
-        # 保存到book_data.json
-        book_data_path = os.path.join("data", f"{pdf_name}_book_data.json")
-        os.makedirs("data", exist_ok=True)
-
+        # 保存到新的目录结构下的book_data.json
+        book_data_path = self._init_book_data_json_path()
         with open(book_data_path, 'w', encoding='utf-8') as f:
             json.dump(book_data, f, ensure_ascii=False, indent=2)
 
         print(f"书籍数据已保存到: {book_data_path}")
         return book_data_path
 
+    def load_book_json_data(self):
+        """加载book_json_data_path的json文件到self.book_json_data"""
+        try:
+            # 检查路径是否已设置
+            if not self.book_json_data_path:
+                print("警告: book_json_data_path未设置，正在初始化...")
+                self.book_json_data_path = self._init_book_data_json_path()
+
+            # 检查文件是否存在
+            if not os.path.exists(self.book_json_data_path):
+                print(f"警告: JSON文件不存在: {self.book_json_data_path}")
+                self.book_json_data = []
+                return None
+
+            # 加载JSON文件
+            with open(self.book_json_data_path, 'r', encoding='utf-8') as f:
+                self.book_json_data = json.load(f)
+
+            print(f"成功加载书籍数据，共{len(self.book_json_data)}页数据")
+            return self.book_json_data
+
+        except json.JSONDecodeError as e:
+            print(f"错误: JSON格式无效 - {e}")
+            self.book_json_data = []
+            return None
+        except Exception as e:
+            print(f"错误: 加载JSON文件时发生异常 - {e}")
+            self.book_json_data = []
+            return None
+
+    def save_book_json_data_with_judge(self,page_data_list):
+        # 在判断之前先进行重新load
+        self.load_book_json_data()
+        # 收集书籍数据用于embedding
+        for page_data in page_data_list:
+            page_index = int(page_data["page_index"])
+            if self._is_loaded_this_page(page_index) is None:
+                print(f"存在有新增的内容，我进行存储 page_index:{page_index}")
+                self._save_book_data(page_data_list)
+                break
+
+    def _use_json_convert_to_pdf(self):
+        self.load_book_json_data()
+        texts = []
+        for page_data in self.book_json_data:
+            texts.append(page_data["text"])
+        self._create_text_pdf(texts)
+
+
     def convert(self):
+        page_data_list = []
+        self.load_book_json_data()
         """执行完整的转换流程"""
         try:
             print("开始豆包OCR转换...")
@@ -318,12 +469,17 @@ class DoubaoOCRConverter:
             texts = []
             image_base64_list = []
 
-            page_data_list = []
-
             for i, img_path in enumerate(image_paths):
                 try:
                     page_index = i + 1
                     print(f"正在识别第{page_index}页文字...")
+
+                    temp_page_data = self._is_loaded_this_page(page_index)
+                    if temp_page_data is not None:
+                        page_data_list.append(temp_page_data)
+                        print("=====================================================")
+                        print("数据已经加载过  内容如下\n", temp_page_data["text"])
+                        continue
 
                     # 编码图像
                     image_base64 = self._encode_image_to_base64(img_path)
@@ -346,26 +502,29 @@ class DoubaoOCRConverter:
                         "page_id": f"{pdf_name}_page_{i + 1}"
                     }
                     page_data_list.append(page_data)
-
-                    if page_index >=5:
-                        break
+                    print(f"进行初步存储 page_index:{page_index}<UNK>")
+                    self.save_book_json_data_with_judge(page_data_list)
                 except Exception as e:
                     print(e)
 
                 # 避免API限流
                 time.sleep(1)
 
-            # 收集书籍数据用于embedding
-            self._save_book_data(page_data_list)
+            self.save_book_json_data_with_judge(page_data_list)
 
             # 创建新PDF
             print("正在生成文字版PDF...")
+
+            texts=[]
+            for page_data in page_data_list:
+                texts.append(page_data["text"])
             self._create_text_pdf(texts)
 
             print(f"转换完成！输出文件：{self.output_pdf_path}")
 
         except Exception as e:
             print(f"转换过程中出现错误：{str(e)}")
+            self.save_book_json_data_with_judge(page_data_list)
             raise
         finally:
             # 清理临时文件
@@ -387,16 +546,17 @@ def main():
         print("2. 设置API_KEY和ENDPOINT变量")
         return
 
-    input_pdf = "data/NLC511-004031011023755-34557_駢文通義.pdf"
+    input_pdf = "data/叙事的本质.pdf"
+    #input_pdf = "data/NLC511-004031011023755-34557_駢文通義.pdf"
 
     if not os.path.exists(input_pdf):
         print(f"错误：找不到文件 {input_pdf}")
         return
 
     # 创建转换器并执行转换
-    converter = DoubaoOCRConverter(API_KEY, ENDPOINT, input_pdf)
+    converter = DoubaoOCRConverter(API_KEY, input_pdf)
     converter.convert()
-
+    #converter._use_json_convert_to_pdf()
 
 if __name__ == "__main__":
     main()
