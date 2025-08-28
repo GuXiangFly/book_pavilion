@@ -555,8 +555,8 @@ def main():
 
     # 创建转换器并执行转换
     converter = DoubaoOCRConverter(API_KEY, input_pdf)
-    converter.convert()
-    #converter._use_json_convert_to_pdf()
+    #converter.convert()
+    converter._use_json_convert_to_pdf()
 
 if __name__ == "__main__":
     main()
