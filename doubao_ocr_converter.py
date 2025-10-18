@@ -328,7 +328,7 @@ def main():
     print("=" * 50)
 
     # 配置信息
-    API_KEY = "ef9dbfa5-38f9-4f55-86de-7948bec46d5c"
+    API_KEY = "你的火山引擎token"
     ENDPOINT = "your_doubao_endpoint_here"
 
     if API_KEY == "your_doubao_api_key_here":
