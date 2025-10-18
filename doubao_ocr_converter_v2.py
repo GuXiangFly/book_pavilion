@@ -3,7 +3,7 @@
 """
 @auther guxiang
 @date 2025-08-28
-豆包OCR API版PDF转换器 - 优化版
+豆包OCR API版PDF转换器 - 优化版V2
 使用豆包大模型API将扫描版PDF转换为可编辑的文字版PDF
 """
 
@@ -19,8 +19,6 @@ from typing import List, Optional
 # 导入新创建的模块
 from doubao_api import DoubaoAPIClient
 from pdf_converter import PDFConverter
-
-import save_texts_function
 
 
 class DoubaoOCRConverter:
@@ -41,7 +39,6 @@ class DoubaoOCRConverter:
         self.input_pdf_path = input_pdf_path
         self.output_pdf_path = self._generate_output_path(output_pdf_path)
         self.book_json_data_path = ""
-        self.book_txt_data_path = ""
         self.book_json_data = []
         self.base_name = self._generate_base_name()
 
@@ -134,13 +131,6 @@ class DoubaoOCRConverter:
         self.book_json_data_path = book_data_path
         return book_data_path
 
-    def _init_book_data_text_path(self) -> str:
-        pdf_name = os.path.splitext(os.path.basename(self.input_pdf_path))[0]
-        text_dir = f"data/{pdf_name}/text"
-        os.makedirs(text_dir, exist_ok=True)
-        book_text_data_path = os.path.join(text_dir, f"{pdf_name}_text_data.txt")
-        self.book_txt_data_path = book_text_data_path
-
     def _save_book_data(self, page_data_list: List[dict]) -> str:
         """保存书籍数据到JSON文件"""
         book_data_path = self._init_book_data_json_path()
@@ -228,8 +218,6 @@ class DoubaoOCRConverter:
             print(f"生成PDF时出错：{str(e)}")
             return False
 
-
-
     def convert(self, use_sdk: bool = True, model: str = None):
         """执行完整的转换流程"""
         page_data_list = []
@@ -293,10 +281,6 @@ class DoubaoOCRConverter:
             # 最终保存数据
             self.save_book_json_data_with_judge(page_data_list)
 
-            self._init_book_data_text_path()
-            save_texts_function.save_texts_to_file(texts,self.book_txt_data_path)
-
-
             # 创建新PDF
             print("正在生成文字版PDF...")
             
@@ -324,7 +308,7 @@ class DoubaoOCRConverter:
 
 def main():
     """主函数"""
-    print("豆包OCR PDF转换器 - 优化版")
+    print("豆包OCR PDF转换器 - 优化版V2")
     print("=" * 50)
 
     # 配置信息
@@ -337,9 +321,8 @@ def main():
         print("2. 设置API_KEY和ENDPOINT变量")
         return
 
-    #input_pdf = "data/叙事的本质.pdf"
-    input_pdf = "data/NLC511-004031011023755-34557_駢文通義.pdf"
-
+    input_pdf = "data/叙事的本质.pdf"
+    
     if not os.path.exists(input_pdf):
         print(f"错误：找不到文件 {input_pdf}")
         return
